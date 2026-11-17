@@ -1,0 +1,330 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Remote Screen</title>
+  <style>
+    :root { color-scheme: dark; font: 1rem system-ui, sans-serif; background: #111318; color: #e5e8ef; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; }
+    #viewer { display: grid; grid-template-rows: auto minmax(0, 1fr); height: 100vh; height: 100dvh; }
+    #viewer:fullscreen { width: 100%; height: 100%; }
+    header { display: flex; align-items: center; justify-content: space-between; gap: 12px;
+      padding: 8px 16px; min-height: 52px; background: #191d25; border-bottom: 1px solid #353c49; }
+    nav { display: flex; flex-wrap: wrap; justify-content: end; gap: 8px; }
+    button, input { font: inherit; color: inherit; border: 1px solid #566079; border-radius: 6px; padding: 8px 12px; }
+    button { background: #272f3c; cursor: pointer; }
+    button:focus-visible, input:focus-visible { outline: 2px solid #b0caff; outline-offset: 2px; }
+    main { position: relative; grid-row: 2; min-width: 0; min-height: 0; overflow: hidden; background: #090a0d; }
+    canvas { display: block; width: 100%; height: 100%; object-fit: contain; touch-action: manipulation; }
+    #viewer:fullscreen canvas { touch-action: none; }
+    #fullscreen { position: absolute; top: 12px; right: 12px; z-index: 1; display: grid;
+      place-items: center; width: 48px; height: 48px; padding: 0; border-radius: 12px;
+      color: white; border-color: rgb(255 255 255 / 35%); background: rgb(12 16 24 / 62%);
+      opacity: 0; pointer-events: none; }
+    #fullscreen.is-visible, #fullscreen:focus-visible { opacity: 1; pointer-events: auto; }
+    #viewer:fullscreen #fullscreen { display: none; }
+    #prompt { position: absolute; inset: 0; display: grid; align-content: center; justify-items: center;
+      gap: 16px; overflow: auto; padding: 24px; text-align: center; }
+    #message { margin: 0; }
+    form { display: grid; grid-template-columns: minmax(0, 9rem) auto; gap: 8px; text-align: left; }
+    form label { grid-column: 1 / -1; }
+    input { background: #191d25; }
+    [hidden] { display: none !important; }
+  </style>
+</head>
+<body>
+  <div id="viewer">
+    <header id="connection-bar">
+      <span id="status" role="status">接続しています…</span>
+      <nav aria-label="投影操作">
+        <button id="retry" type="button" hidden>再接続</button>
+      </nav>
+    </header>
+    <main id="screen" aria-label="投影画面">
+      <canvas id="frame" role="img" aria-label="Windows の共有画面" hidden></canvas>
+      <button id="fullscreen" type="button" aria-label="全画面" hidden>
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M9 4H4v5m11-5h5v5m0 6v5h-5M4 15v5h5"/>
+        </svg>
+      </button>
+      <div id="prompt">
+        <p id="message" aria-live="polite">Windows アプリに接続しています。</p>
+        <form id="authenticate" hidden>
+          <label for="code">認証コード</label>
+          <input id="code" name="code" maxlength="6" pattern="[A-Za-z0-9]{6}" required
+                 autocapitalize="none" spellcheck="false" autocomplete="one-time-code">
+          <button id="connect" type="submit">接続</button>
+        </form>
+      </div>
+    </main>
+  </div>
+  <script>
+    const viewer = document.getElementById('viewer');
+    const frame = document.getElementById('frame');
+    const drawing = frame.getContext('2d', { alpha: false });
+    const connectionBar = document.getElementById('connection-bar');
+    const statusText = document.getElementById('status');
+    const promptPanel = document.getElementById('prompt');
+    const message = document.getElementById('message');
+    const form = document.getElementById('authenticate');
+    const codeInput = document.getElementById('code');
+    const connectButton = document.getElementById('connect');
+    const retry = document.getElementById('retry');
+    const fullscreen = document.getElementById('fullscreen');
+    const tileSize = 256;
+    let linkCode = location.hash.slice(1);
+    let stream;
+    let connectionAttempt;
+    let fullscreenButtonTimer;
+    let swipeStart;
+
+    function hideFullscreenButton() {
+      clearTimeout(fullscreenButtonTimer);
+      fullscreen.classList.remove('is-visible');
+    }
+
+    function syncFullscreenButton() {
+      fullscreen.hidden = !document.fullscreenEnabled || Boolean(document.fullscreenElement) || frame.hidden;
+      if (fullscreen.hidden) hideFullscreenButton();
+    }
+
+    function disconnected() {
+      frame.hidden = true;
+      syncFullscreenButton();
+      report('接続が切れました', 'Windows アプリの共有状態とネットワークを確認してください。');
+      retry.hidden = false;
+    }
+
+    function report(label, detail = '') {
+      if (statusText.textContent !== label) statusText.textContent = label;
+      if (message.textContent !== detail) message.textContent = detail;
+      connectionBar.hidden = !label;
+      promptPanel.hidden = !detail;
+    }
+
+    function showCodeForm(detail = 'Windows アプリに表示された6文字の認証コードを入力してください。') {
+      syncFullscreenButton();
+      report('認証コードが必要です', detail);
+      form.hidden = false;
+    }
+
+    async function authenticate(code) {
+      if (connectButton.disabled) return;
+      connectButton.disabled = true;
+      codeInput.disabled = true;
+      report('接続しています…', '認証コードを確認しています。');
+      const request = new AbortController();
+      const timeout = setTimeout(() => request.abort(), 4000);
+      try {
+        const response = await fetch('/connect', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ code }),
+          signal: request.signal
+        });
+        if (response.ok) {
+          codeInput.value = '';
+          history.replaceState(null, '', '/');
+          receive(true);
+        } else if (response.status === 401) {
+          showCodeForm('認証コードが違うか、共有を再開したため期限が切れました。');
+        } else if (response.status === 429) {
+          showCodeForm('試行回数が多いため、少し待ってからお試しください。');
+        } else if (response.status === 503) {
+          showCodeForm('Windows アプリが端末情報を保存できませんでした。');
+        } else {
+          showCodeForm('認証できませんでした。Windows アプリの共有状態を確認してください。');
+        }
+      } catch {
+        showCodeForm('Windows アプリに接続できませんでした。ネットワークを確認してください。');
+      } finally {
+        clearTimeout(timeout);
+        connectButton.disabled = false;
+        codeInput.disabled = false;
+      }
+    }
+
+    async function receive(justAuthenticated = false) {
+      connectionAttempt?.abort();
+      closeStream();
+      frame.hidden = true;
+      syncFullscreenButton();
+      retry.hidden = true;
+      form.hidden = true;
+      report('接続しています…', 'Windows アプリに接続しています。');
+
+      const request = new AbortController();
+      connectionAttempt = request;
+      const timeout = setTimeout(() => request.abort(), 4000);
+      try {
+        const response = await fetch('/status', { signal: request.signal, cache: 'no-store' });
+        if (connectionAttempt !== request) return;
+        if (response.status === 401) {
+          if (/^[a-z0-9]{6}$/.test(linkCode)) {
+            const code = linkCode;
+            linkCode = '';
+            await authenticate(code);
+          } else {
+            showCodeForm(justAuthenticated ? 'ブラウザでこの接続先の Cookie を許可してください。' : undefined);
+          }
+          return;
+        }
+        if (!response.ok) throw new Error('Stream unavailable');
+        if (!drawing || typeof DecompressionStream !== 'function') {
+          report('投影に対応していません', '別のブラウザで共有リンクを開いてください。');
+          return;
+        }
+
+        linkCode = '';
+        if (location.hash) history.replaceState(null, '', '/');
+        openStream();
+      } catch {
+        if (connectionAttempt === request) disconnected();
+      } finally {
+        clearTimeout(timeout);
+        if (connectionAttempt === request) connectionAttempt = undefined;
+      }
+    }
+
+    async function decompress(bytes, width, height) {
+      const source = new Blob([bytes]).stream();
+      const pixels = await new Response(source.pipeThrough(new DecompressionStream('deflate'))).arrayBuffer();
+      return new ImageData(new Uint8ClampedArray(pixels), width, height);
+    }
+
+    async function drawFrame(packet, socket) {
+      try {
+        if (stream !== socket || socket.readyState !== WebSocket.OPEN) return;
+        const data = new DataView(packet);
+        const width = data.getUint16(0, true);
+        const height = data.getUint16(2, true);
+        const tileCount = data.getUint16(4, true);
+        const columns = Math.ceil(width / tileSize);
+        const slots = columns * Math.ceil(height / tileSize);
+        const needsFullFrame = frame.hidden || frame.width !== width || frame.height !== height;
+        if (width < 1 || height < 1 || width > 1920 || height > 1920 || tileCount > slots
+            || (needsFullFrame && tileCount !== slots)) {
+          throw new Error('Invalid frame dimensions');
+        }
+
+        let offset = 6;
+        const pending = [];
+        const seen = new Set();
+        for (let tile = 0; tile < tileCount; tile++) {
+          const index = data.getUint16(offset, true);
+          const length = data.getUint32(offset + 2, true);
+          offset += 6;
+          if (index >= slots || seen.has(index) || length === 0 || offset + length > packet.byteLength) {
+            throw new Error('Invalid tile');
+          }
+          seen.add(index);
+          const x = (index % columns) * tileSize;
+          const y = Math.floor(index / columns) * tileSize;
+          const bytes = new Uint8Array(packet, offset, length);
+          const regionWidth = Math.min(tileSize, width - x);
+          const regionHeight = Math.min(tileSize, height - y);
+          pending.push({ bytes, regionWidth, regionHeight, x, y });
+          offset += length;
+        }
+        if (offset !== packet.byteLength) throw new Error('Invalid frame length');
+
+        const regions = await Promise.all(pending.map(async ({ bytes, regionWidth, regionHeight, x, y }) =>
+          ({ image: await decompress(bytes, regionWidth, regionHeight), x, y })));
+        if (stream !== socket || socket.readyState !== WebSocket.OPEN) return;
+        if (frame.width !== width || frame.height !== height) {
+          frame.width = width;
+          frame.height = height;
+        }
+        for (const { image, x, y } of regions) {
+          drawing.putImageData(image, x, y);
+        }
+        if (frame.hidden) {
+          frame.hidden = false;
+          report('');
+          syncFullscreenButton();
+        }
+        socket.send(new Uint8Array([1]));
+      } catch {
+        socket.close();
+      }
+    }
+
+    function openStream() {
+      const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const socket = new WebSocket(protocol + '//' + location.host + '/stream');
+      stream = socket;
+      socket.binaryType = 'arraybuffer';
+      const timeout = setTimeout(() => socket.close(), 5000);
+      socket.onopen = () => {
+        clearTimeout(timeout);
+        if (stream === socket) report('画面を待機中', 'Windows アプリから画面が届くまでお待ちください。');
+      };
+      socket.onmessage = event => drawFrame(event.data, socket);
+      socket.onclose = () => {
+        clearTimeout(timeout);
+        if (stream !== socket) return;
+        stream = undefined;
+        disconnected();
+      };
+    }
+
+    function closeStream() {
+      const socket = stream;
+      stream = undefined;
+      socket?.close();
+    }
+
+    frame.addEventListener('click', () => {
+      if (fullscreen.hidden) return;
+      clearTimeout(fullscreenButtonTimer);
+      fullscreen.classList.add('is-visible');
+      fullscreenButtonTimer = setTimeout(hideFullscreenButton, 3500);
+    });
+    fullscreen.addEventListener('click', async () => {
+      try {
+        if (!fullscreen.hidden) await viewer.requestFullscreen();
+      } catch {
+        syncFullscreenButton();
+      }
+    });
+    document.addEventListener('fullscreenchange', () => {
+      swipeStart = undefined;
+      syncFullscreenButton();
+    });
+    viewer.addEventListener('touchstart', event => {
+      swipeStart = document.fullscreenElement === viewer && event.touches.length === 1
+        ? event.touches[0] : undefined;
+    }, { passive: true });
+    viewer.addEventListener('touchend', event => {
+      const start = swipeStart;
+      swipeStart = undefined;
+      if (!start || document.fullscreenElement !== viewer || event.touches.length !== 0) return;
+      const end = event.changedTouches[0];
+      if (end?.identifier !== start.identifier) return;
+      const down = end.clientY - start.clientY;
+      if (down < 72 || down < Math.abs(end.clientX - start.clientX) * 1.5) return;
+      if (event.cancelable) event.preventDefault();
+      document.exitFullscreen().catch(syncFullscreenButton);
+    });
+    viewer.addEventListener('touchcancel', () => { swipeStart = undefined; });
+    form.addEventListener('submit', event => {
+      event.preventDefault();
+      authenticate(codeInput.value.toLowerCase());
+    });
+    retry.addEventListener('click', () => receive());
+    window.addEventListener('hashchange', () => location.reload());
+    window.addEventListener('pagehide', () => {
+      connectionAttempt?.abort();
+      connectionAttempt = undefined;
+      closeStream();
+    });
+    window.addEventListener('pageshow', event => {
+      if (event.persisted) receive();
+    });
+    receive();
+  </script>
+</body>
+</html>

@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<root>
+  <resheader name="resmimetype"><value>text/microsoft-resx</value></resheader>
+  <resheader name="version"><value>2.0</value></resheader>
+  <data name="InstallDriverButton.Content"><value>仮想ディスプレイドライバーをセットアップ</value></data>
+  <data name="DriverSetupFailed"><value>セットアップを開けませんでした。{0}</value></data>
+  <data name="DriverSetupCanceled"><value>セットアップをキャンセルしました。</value></data>
+  <data name="ClearDevicesButton.Content"><value>承認済み端末をすべて削除</value></data>
+  <data name="ClearDevicesTitle"><value>承認済み端末をすべて削除しますか？</value></data>
+  <data name="ClearDevicesMessage"><value>共有中の場合は配信を停止します。次回の接続時には、新しい認証コードまたは共有リンクが必要です。</value></data>
+  <data name="ClearDevicesConfirm"><value>すべて削除</value></data>
+  <data name="Cancel"><value>キャンセル</value></data>
+  <data name="DevicesCleared"><value>承認済み端末をすべて削除しました。</value></data>
+  <data name="ClearDevicesFailed"><value>承認済み端末を削除できませんでした。{0}</value></data>
+  <data name="DisplayPicker.Header"><value>共有するディスプレイ</value></data>
+  <data name="ExtendedModeHint"><value>追加した画面が表示されない場合は、Windows の設定で「表示画面を拡張する」を選んでください。</value></data>
+  <data name="NoDisplays"><value>ディスプレイが見つかりません</value></data>
+  <data name="NoExtendedDisplays"><value>拡張ディスプレイがありません</value></data>
+  <data name="SharingActive"><value>共有中　{0}　｜　閲覧中 {1} 件</value></data>
+  <data name="SharingInactive"><value>共有停止中</value></data>
+  <data name="SharingStopping"><value>共有を停止しています…</value></data>
+</root>
