@@ -14,6 +14,14 @@ Windows 10 (バージョン 2004) 以降と .NET 8 SDK が必要です。実行�
 
 x64 では [Virtual Driver Control 25.7.23](https://github.com/VirtualDrivers/Virtual-Display-Driver/releases/tag/25.7.23) を取得し、SHA-256 を検証して `bin\VirtualDisplayDriver` に同梱します。2 回目以降はプロジェクト直下に保存した ZIP を使用します。配布時は `bin` フォルダー全体を渡してください。ドライバーを含めずにビルドする場合は `.\build.ps1 -SkipVirtualDisplayDriver` を使います。
 
+## インストーラー配布
+
+Windows 11 x64 向けのセットアップを [HSIS v0.11.2](https://github.com/Himeyama/hsis/releases/tag/v0.11.2) で生成します。.NET ランタイムと仮想ディスプレイの導入ツールを同梱します。インストールはユーザー単位です。仮想ディスプレイドライバーは、インストール後にアプリの「拡張」から導入できます。
+
+- GitHub Actions の **Build Remote Screen installer → Run workflow** で手動実行すると、セットアップ EXE と SHA-256 が Artifacts に保存されます。
+- `RemoteScreen.csproj` の `Version` と一致するタグ（例 `v0.1.0`）を push すると、GitHub Releases にも公開します。
+- ローカルでインストーラー用のファイルを用意するには `.\build.ps1 -Publish` を実行します。発行先は `publish\` です。
+
 ## 複製
 
 1. Windows アプリで「複製」を選び、「共有するディスプレイ」から画面を選んで「共有を開始」を押します。初期選択はメインディスプレイです。

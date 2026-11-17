@@ -1,5 +1,6 @@
 [CmdletBinding()]
 param(
+    [switch] $Publish,
     [switch] $SkipVirtualDisplayDriver
 )
 
@@ -13,7 +14,8 @@ $platform = switch ($architecture) {
     default { throw "Unsupported Windows architecture: $architecture" }
 }
 
-$output = Join-Path $projectRoot 'bin'
+$outputName = if ($Publish) { 'publish' } else { 'bin' }
+$output = Join-Path $projectRoot $outputName
 $executable = Join-Path $output 'RemoteScreen.exe'
 $driverArchive = $null
 if ($platform -eq 'x64' -and -not $SkipVirtualDisplayDriver) {
@@ -54,7 +56,7 @@ foreach ($process in @(Get-Process RemoteScreen -ErrorAction SilentlyContinue | 
     }
 }
 
-foreach ($directory in @('bin', 'obj')) {
+foreach ($directory in @($outputName, 'obj')) {
     $path = Join-Path $projectRoot $directory
     if (Test-Path -LiteralPath $path) {
         $item = Get-Item -LiteralPath $path -Force
@@ -63,7 +65,7 @@ foreach ($directory in @('bin', 'obj')) {
             ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
             throw "Unexpected build directory: $path"
         }
-        if ($directory -eq 'bin' -and $driverArchive) {
+        if ($directory -eq $outputName -and $driverArchive) {
             foreach ($entry in Get-ChildItem -LiteralPath $item.FullName -Force) {
                 if ([IO.Path]::GetDirectoryName($entry.FullName) -ne $item.FullName -or
                     ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
@@ -101,9 +103,16 @@ if ($driverArchive) {
 $rid = "win-$($platform.ToLowerInvariant())"
 $projectFile = Join-Path $projectRoot 'RemoteScreen.csproj'
 $buildOutput = $output + [IO.Path]::DirectorySeparatorChar
-dotnet build $projectFile -c Release -p:Platform=$platform -r $rid --self-contained false -o $buildOutput
+if ($Publish) {
+    dotnet publish $projectFile -c Release -p:Platform=$platform -r $rid --self-contained true -o $buildOutput
+}
+else {
+    dotnet build $projectFile -c Release -p:Platform=$platform -r $rid --self-contained false -o $buildOutput
+}
 if ($LASTEXITCODE -ne 0) {
     throw "Build failed with exit code $LASTEXITCODE."
 }
 
-Start-Process -FilePath $executable -WorkingDirectory $output -WindowStyle Normal
+if (-not $Publish) {
+    Start-Process -FilePath $executable -WorkingDirectory $output -WindowStyle Normal
+}

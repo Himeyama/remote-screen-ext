@@ -1,0 +1,128 @@
+name: Build Remote Screen installer
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2025
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: pwsh
+        working-directory: app
+    outputs:
+      version: ${{ steps.version.outputs.value }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: app
+          persist-credentials: false
+
+      - name: Check out HSIS v0.11.2
+        uses: actions/checkout@v4
+        with:
+          repository: Himeyama/hsis
+          ref: cc5d03947606deee1a7c445e3fe24f8902b0d679 # v0.11.2
+          path: hsis
+          persist-credentials: false
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            8.0.x
+            9.0.x
+
+      - name: Read application version
+        id: version
+        run: |
+          $project = [xml](Get-Content -LiteralPath ./RemoteScreen.csproj -Raw)
+          $version = [string]$project.Project.PropertyGroup.Version
+          if ($version -cnotmatch '^(0|[1-9][0-9]{0,4})(\.(0|[1-9][0-9]{0,4})){2}$' -or
+              ($version.Split('.') | Where-Object { [int]$_ -gt 65535 })) {
+            throw 'RemoteScreen.csproj must use a three-part numeric version with components up to 65535.'
+          }
+          if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -cne "v$version") {
+            throw "The tag must match the project version (v$version)."
+          }
+          "value=$version" >> $env:GITHUB_OUTPUT
+
+      - name: Publish Remote Screen
+        run: ./build.ps1 -Publish
+
+      - name: Build HSIS CLI
+        run: |
+          $toolPath = Join-Path $env:RUNNER_TEMP 'hsis-v0.11.2'
+          dotnet publish ../hsis/src/Hsis.Cli/Hsis.Cli.csproj -c Release -p:Platform=x64 -r win-x64 --self-contained true -o $toolPath
+          if ($LASTEXITCODE -ne 0) { throw 'HSIS CLI publish failed.' }
+
+      - name: Build installer and checksum
+        id: setup
+        env:
+          APP_VERSION: ${{ steps.version.outputs.value }}
+          HSIS_7ZIP_PATH: 'C:\Program Files\7-Zip\7z.exe'
+        run: |
+          $hsis = Join-Path $env:RUNNER_TEMP 'hsis-v0.11.2/hsis.exe'
+          $payload = (Resolve-Path -LiteralPath ./publish).ProviderPath
+          foreach ($file in @('RemoteScreen.exe', 'RemoteScreen.pri', 'coreclr.dll', 'VirtualDisplayDriver/Dependencies/devcon.exe')) {
+            if (-not (Test-Path -LiteralPath (Join-Path $payload $file) -PathType Leaf)) {
+              throw "Missing installer payload file: $file"
+            }
+          }
+          $output = Join-Path $env:RUNNER_TEMP 'remote-screen-setup'
+          & $hsis build ./installer/RemoteScreen.nsi --output $output "-DAPP_VERSION=$env:APP_VERSION" "-DSOURCE_DIR=$payload"
+          if ($LASTEXITCODE -ne 0) { throw 'HSIS installer build failed.' }
+
+          $fileName = "RemoteScreen-$env:APP_VERSION-win-x64-Setup.exe"
+          $installers = @(Get-ChildItem -LiteralPath $output -Recurse -File -Filter $fileName)
+          if ($installers.Count -ne 1) { throw "Expected one $fileName." }
+          $installer = $installers[0]
+          $hash = (Get-FileHash -LiteralPath $installer.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $fileName" | Set-Content -LiteralPath "$($installer.FullName).sha256" -Encoding ascii
+          "directory=$($installer.DirectoryName)" >> $env:GITHUB_OUTPUT
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: RemoteScreen-${{ steps.version.outputs.value }}-win-x64
+          path: |
+            ${{ steps.setup.outputs.directory }}/*-Setup.exe
+            ${{ steps.setup.outputs.directory }}/*-Setup.exe.sha256
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+  release:
+    if: github.ref_type == 'tag'
+    needs: build
+    runs-on: windows-2025
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: RemoteScreen-${{ needs.build.outputs.version }}-win-x64
+          path: assets
+
+      - name: Publish GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          APP_VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          $setup = "./assets/RemoteScreen-$env:APP_VERSION-win-x64-Setup.exe"
+          gh release view $tag --json tagName 2>$null | Out-Null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $tag $setup "$setup.sha256" --clobber
+          }
+          else {
+            gh release create $tag $setup "$setup.sha256" --verify-tag --generate-notes
+          }
+          exit $LASTEXITCODE

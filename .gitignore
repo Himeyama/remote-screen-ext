@@ -1,4 +1,5 @@
 bin/
 obj/
+/publish/
 /VDD.Control.*.zip
 /VDD.Control.*.zip.download
